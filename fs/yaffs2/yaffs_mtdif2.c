@@ -188,12 +188,8 @@ int nandmtd2_ReadChunkWithTagsFromNAND(yaffs_Device *dev, int chunkInNAND,
 	}
 	if (retval == 0)
 		return YAFFS_OK;
-	else {
-        T(YAFFS_TRACE_ERROR, (TSTR("nandmtd2_ReadChunkWithTagsFromNAND chunk %d eccResult %d"
-        TENDSTR), chunkInNAND, tags->eccResult));
-
+	else
 		return YAFFS_FAIL;
-}
 }
 
 int nandmtd2_MarkNANDBlockBad(struct yaffs_DeviceStruct *dev, int blockNo)

@@ -36,6 +36,10 @@ struct gpio_kp {
 unsigned char SideKeypressed=0;
 /*end add*/
 
+// Disable needless klog spam
+#define pr_info(...) 
+#define printk(...)
+
 static void clear_phantom_key(struct gpio_kp *kp, int out, int in)
 {
 	struct gpio_event_matrix_info *mi = kp->keypad_info;

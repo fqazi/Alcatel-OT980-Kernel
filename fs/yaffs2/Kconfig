@@ -162,12 +162,3 @@ config YAFFS_EMPTY_LOST_AND_FOUND
 	help
 	  If this is enabled then the contents of lost and found is
 	  automatically dumped at mount.
-
-config YAFFS_REPORT_ECC_ERROR
-    bool "Empty lost and found on mount"
-    depends on YAFFS_FS
-    default y
-    help
-      record files having ECC errors. ECC errors are collected when
-      read/write/resize files and garbage collecting.
-      File names are output to /proc/yaffs_error

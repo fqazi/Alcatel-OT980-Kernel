@@ -118,38 +118,15 @@ static uint32_t YCALCBLOCKS(uint64_t partition_size, uint32_t block_size)
 #include "yaffs_mtdif1.h"
 #include "yaffs_mtdif2.h"
 
-unsigned int yaffs_traceMask = YAFFS_TRACE_BAD_BLOCKS
-//             |YAFFS_TRACE_SCAN
-//             |YAFFS_TRACE_TRACING
-//             |YAFFS_TRACE_GC
-//             |YAFFS_TRACE_GC_DETAIL
-//             \YAFFS_TRACE_SCAN_DEBUG
-//             |YAFFS_TRACE_CHECKPOINT
-;
+unsigned int yaffs_traceMask = YAFFS_TRACE_BAD_BLOCKS;
 unsigned int yaffs_wr_attempts = YAFFS_WR_ATTEMPTS;
 unsigned int yaffs_auto_checkpoint = 1;
-/* number of ecc errors to simulate */
-unsigned int yaffs_simulate_ecc_errors = 0;
-#ifdef CONFIG_YAFFS_REPORT_ECC_ERROR
-ts_error_file_list yaffsFilesWithEccError;
-#endif
-
-typedef enum {
-  MODE_FIXED=0,
-  MODE_UNFIXED,
-  MODE_ALL
-}t_yaffs_error_proc_mode;
-
-int yaffs_error_proc_output_read=0;
-t_yaffs_error_proc_mode yaffs_error_proc_mode=MODE_ALL;
-int yaffs_error_proc_is_open=0;
 
 /* Module Parameters */
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0))
 module_param(yaffs_traceMask, uint, 0644);
 module_param(yaffs_wr_attempts, uint, 0644);
 module_param(yaffs_auto_checkpoint, uint, 0644);
-module_param(yaffs_simulate_ecc_errors, int, 0644);
 #else
 MODULE_PARM(yaffs_traceMask, "i");
 MODULE_PARM(yaffs_wr_attempts, "i");
@@ -186,6 +163,11 @@ static struct inode *yaffs_iget(struct super_block *sb, unsigned long ino);
 #define yaffs_SuperToDevice(sb)	((yaffs_Device *)sb->u.generic_sbp)
 #endif
 
+
+#define update_dir_time(dir) do {\
+			(dir)->i_ctime = (dir)->i_mtime = CURRENT_TIME; \
+		} while(0)
+		
 static void yaffs_put_super(struct super_block *sb);
 
 static ssize_t yaffs_file_write(struct file *f, const char *buf, size_t n,
@@ -395,6 +377,122 @@ static void yaffs_GrossUnlock(yaffs_Device *dev)
 	T(YAFFS_TRACE_OS, ("yaffs unlocking %p\n", current));
 	up(&dev->grossLock);
 }
+
+
+/*-----------------------------------------------------------------*/
+/* Directory search context allows us to unlock access to yaffs during
+ * filldir without causing problems with the directory being modified.
+ * This is similar to the tried and tested mechanism used in yaffs direct.
+ *
+ * A search context iterates along a doubly linked list of siblings in the
+ * directory. If the iterating object is deleted then this would corrupt
+ * the list iteration, likely causing a crash. The search context avoids
+ * this by using the removeObjectCallback to move the search context to the
+ * next object before the object is deleted.
+ *
+ * Many readdirs (and thus seach conexts) may be alive simulateously so
+ * each yaffs_Device has a list of these.
+ *
+ * A seach context lives for the duration of a readdir.
+ *
+ * All these functions must be called while yaffs is locked.
+ */
+
+struct yaffs_SearchContext {
+	yaffs_Device *dev;
+	yaffs_Object *dirObj;
+	yaffs_Object *nextReturn;
+	struct ylist_head others;
+};
+
+/*
+ * yaffs_NewSearch() creates a new search context, initialises it and
+ * adds it to the device's search context list.
+ *
+ * Called at start of readdir.
+ */
+static struct yaffs_SearchContext * yaffs_NewSearch(yaffs_Object *dir)
+{
+	yaffs_Device *dev = dir->myDev;
+	struct yaffs_SearchContext *sc = YMALLOC(sizeof(struct yaffs_SearchContext));
+	if(sc){
+		sc->dirObj = dir;
+		sc->dev = dev;
+		if( ylist_empty(&sc->dirObj->variant.directoryVariant.children))
+			sc->nextReturn = NULL;
+		else
+			sc->nextReturn = ylist_entry(
+                                dir->variant.directoryVariant.children.next,
+				yaffs_Object,siblings);
+		YINIT_LIST_HEAD(&sc->others);
+		ylist_add(&sc->others,&dev->searchContexts);
+	}
+	return sc;
+}
+
+/*
+ * yaffs_EndSearch() disposes of a search context and cleans up.
+ */
+static void yaffs_EndSearch(struct yaffs_SearchContext * sc)
+{
+	if(sc){
+		ylist_del(&sc->others);
+		YFREE(sc);
+	}
+}
+
+/*
+ * yaffs_SearchAdvance() moves a search context to the next object.
+ * Called when the search iterates or when an object removal causes
+ * the search context to be moved to the next object.
+ */
+static void yaffs_SearchAdvance(struct yaffs_SearchContext *sc)
+{
+        if(!sc)
+                return;
+
+        if( sc->nextReturn == NULL ||
+                ylist_empty(&sc->dirObj->variant.directoryVariant.children))
+                sc->nextReturn = NULL;
+        else {
+                struct ylist_head *next = sc->nextReturn->siblings.next;
+
+                if( next == &sc->dirObj->variant.directoryVariant.children)
+                        sc->nextReturn = NULL; /* end of list */
+                else
+                        sc->nextReturn = ylist_entry(next,yaffs_Object,siblings);
+        }
+}
+
+/*
+ * yaffs_RemoveObjectCallback() is called when an object is unlinked.
+ * We check open search contexts and advance any which are currently
+ * on the object being iterated.
+ */
+static void yaffs_RemoveObjectCallback(yaffs_Object *obj)
+{
+
+        struct ylist_head *i;
+        struct yaffs_SearchContext *sc;
+        struct ylist_head *search_contexts = &obj->myDev->searchContexts;
+
+
+        /* Iterate through the directory search contexts.
+         * If any are currently on the object being removed, then advance
+         * the search context to the next object to prevent a hanging pointer.
+         */
+         ylist_for_each(i, search_contexts) {
+                if (i) {
+                        sc = ylist_entry(i, struct yaffs_SearchContext,others);
+                        if(sc->nextReturn == obj)
+                                yaffs_SearchAdvance(sc);
+                }
+	}
+
+}
+
+
+/*-----------------------------------------------------------------*/
 
 static int yaffs_readlink(struct dentry *dentry, char __user *buffer,
 			int buflen)
@@ -621,7 +719,6 @@ static int yaffs_readpage_nolock(struct file *f, struct page *pg)
 	yaffs_Object *obj;
 	unsigned char *pg_buf;
 	int ret;
-    int lastEccFixed =0, lastEccUnfixed = 0;
 
 	yaffs_Device *dev;
 
@@ -629,7 +726,7 @@ static int yaffs_readpage_nolock(struct file *f, struct page *pg)
 			(unsigned)(pg->index << PAGE_CACHE_SHIFT),
 			(unsigned)PAGE_CACHE_SIZE));
 
-    obj = yaffs_DentryToObject(f->f_dentry);
+	obj = yaffs_DentryToObject(f->f_dentry);
 
 	dev = obj->myDev;
 
@@ -645,21 +742,10 @@ static int yaffs_readpage_nolock(struct file *f, struct page *pg)
 
 	yaffs_GrossLock(dev);
 
-    /* ajayet check if EccErrors increased during page read */
-    lastEccUnfixed = obj->myDev->eccUnfixed;
-    lastEccFixed = obj->myDev->eccFixed;
-            	
-    ret = yaffs_ReadDataFromFile(obj, pg_buf,
+	ret = yaffs_ReadDataFromFile(obj, pg_buf,
 				pg->index << PAGE_CACHE_SHIFT,
 				PAGE_CACHE_SIZE);
-    
-    if ( obj->myDev->eccUnfixed > lastEccUnfixed ||  obj->myDev->eccFixed > lastEccFixed) {
-        
-        T(YAFFS_TRACE_ERROR, ("yaffs_readpage error in file %s\n",
-        f->f_dentry->d_iname));
 
-    }
-    
 	yaffs_GrossUnlock(dev);
 
 	if (ret >= 0)
@@ -701,38 +787,46 @@ static int yaffs_writepage(struct page *page)
 #endif
 {
 	struct address_space *mapping = page->mapping;
-	loff_t offset = (loff_t) page->index << PAGE_CACHE_SHIFT;
 	struct inode *inode;
 	unsigned long end_index;
 	char *buffer;
 	yaffs_Object *obj;
 	int nWritten = 0;
 	unsigned nBytes;
+	loff_t i_size;
 
 	if (!mapping)
 		BUG();
 	inode = mapping->host;
 	if (!inode)
 		BUG();
+	i_size = i_size_read(inode);
 
-	if (offset > inode->i_size) {
+	end_index = i_size >> PAGE_CACHE_SHIFT;
+
+	if(page->index < end_index)
+		nBytes = PAGE_CACHE_SIZE;
+	else {
+		nBytes = i_size & (PAGE_CACHE_SIZE -1);
+
+		if (page->index > end_index || !nBytes) {
 		T(YAFFS_TRACE_OS,
 			("yaffs_writepage at %08x, inode size = %08x!!!\n",
 			(unsigned)(page->index << PAGE_CACHE_SHIFT),
 			(unsigned)inode->i_size));
 		T(YAFFS_TRACE_OS,
 			("                -> don't care!!\n"));
+
+			zero_user_segment(page,0,PAGE_CACHE_SIZE);
+			set_page_writeback(page);
 		unlock_page(page);
+			end_page_writeback(page);
 		return 0;
 	}
+	}
 
-	end_index = inode->i_size >> PAGE_CACHE_SHIFT;
-
-	/* easy case */
-	if (page->index < end_index)
-		nBytes = PAGE_CACHE_SIZE;
-	else
-		nBytes = inode->i_size & (PAGE_CACHE_SIZE - 1);
+	if(nBytes != PAGE_CACHE_SIZE)
+		zero_user_segment(page,nBytes,PAGE_CACHE_SIZE);
 
 	get_page(page);
 
@@ -758,8 +852,9 @@ static int yaffs_writepage(struct page *page)
 	yaffs_GrossUnlock(obj->myDev);
 
 	kunmap(page);
-	SetPageUptodate(page);
-	UnlockPage(page);
+	set_page_writeback(page);
+	unlock_page(page);
+	end_page_writeback(page);
 	put_page(page);
 
 	return (nWritten == nBytes) ? 0 : -ENOSPC;
@@ -773,8 +868,6 @@ static int yaffs_write_begin(struct file *filp, struct address_space *mapping,
 {
 	struct page *pg = NULL;
 	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
-	uint32_t offset = pos & (PAGE_CACHE_SIZE - 1);
-	uint32_t to = offset + len;
 
 	int ret = 0;
 	int space_held = 0;
@@ -802,7 +895,7 @@ static int yaffs_write_begin(struct file *filp, struct address_space *mapping,
 
 	/* Update page if required */
 
-	if (!Page_Uptodate(pg) && (offset || to < PAGE_CACHE_SIZE))
+	if (!Page_Uptodate(pg))
 		ret = yaffs_readpage_nolock(filp, pg);
 
 	if (ret)
@@ -831,7 +924,7 @@ static int yaffs_prepare_write(struct file *f, struct page *pg,
 {
 	T(YAFFS_TRACE_OS, ("yaffs_prepair_write\n"));
 
-	if (!Page_Uptodate(pg) && (offset || to < PAGE_CACHE_SIZE))
+	if (!Page_Uptodate(pg))
 		return yaffs_readpage_nolock(f, pg);
 	return 0;
 }
@@ -861,9 +954,8 @@ static int yaffs_write_end(struct file *filp, struct address_space *mapping,
 			("yaffs_write_end not same size ret %d  copied %d\n",
 			ret, copied));
 		SetPageError(pg);
-		ClearPageUptodate(pg);
 	} else {
-		SetPageUptodate(pg);
+		/* Nothing */
 	}
 
 	kunmap(pg);
@@ -903,9 +995,8 @@ static int yaffs_commit_write(struct file *f, struct page *pg, unsigned offset,
 			("yaffs_commit_write not same size nWritten %d  nBytes %d\n",
 			nWritten, nBytes));
 		SetPageError(pg);
-		ClearPageUptodate(pg);
 	} else {
-		SetPageUptodate(pg);
+		/* Nothing */
 	}
 
 	kunmap(pg);
@@ -1110,7 +1201,7 @@ static ssize_t yaffs_file_write(struct file *f, const char *buf, size_t n,
 
 	}
 	yaffs_GrossUnlock(dev);
-	return nWritten == 0 ? -ENOSPC : nWritten;
+	return (nWritten == 0) && (n > 0) ? -ENOSPC : nWritten;
 }
 
 /* Space holding and freeing is done to ensure we have space available for write_begin/end */
@@ -1158,10 +1249,11 @@ static int yaffs_readdir(struct file *f, void *dirent, filldir_t filldir)
 {
 	yaffs_Object *obj;
 	yaffs_Device *dev;
+        struct yaffs_SearchContext *sc;
 	struct inode *inode = f->f_dentry->d_inode;
 	unsigned long offset, curoffs;
-	struct ylist_head *i;
 	yaffs_Object *l;
+        int retVal = 0;
 
 	char name[YAFFS_MAX_NAME_LENGTH + 1];
 
@@ -1172,14 +1264,22 @@ static int yaffs_readdir(struct file *f, void *dirent, filldir_t filldir)
 
 	offset = f->f_pos;
 
+        sc = yaffs_NewSearch(obj);
+        if(!sc){
+                retVal = -ENOMEM;
+                goto unlock_out;
+        }
+
 	T(YAFFS_TRACE_OS, ("yaffs_readdir: starting at %d\n", (int)offset));
 
 	if (offset == 0) {
 		T(YAFFS_TRACE_OS,
 			("yaffs_readdir: entry . ino %d \n",
 			(int)inode->i_ino));
+		yaffs_GrossUnlock(dev);
 		if (filldir(dirent, ".", 1, offset, inode->i_ino, DT_DIR) < 0)
 			goto out;
+		yaffs_GrossLock(dev);
 		offset++;
 		f->f_pos++;
 	}
@@ -1187,9 +1287,11 @@ static int yaffs_readdir(struct file *f, void *dirent, filldir_t filldir)
 		T(YAFFS_TRACE_OS,
 			("yaffs_readdir: entry .. ino %d \n",
 			(int)f->f_dentry->d_parent->d_inode->i_ino));
+		yaffs_GrossUnlock(dev);
 		if (filldir(dirent, "..", 2, offset,
 			f->f_dentry->d_parent->d_inode->i_ino, DT_DIR) < 0)
 			goto out;
+		yaffs_GrossLock(dev);
 		offset++;
 		f->f_pos++;
 	}
@@ -1205,10 +1307,12 @@ static int yaffs_readdir(struct file *f, void *dirent, filldir_t filldir)
 		f->f_version = inode->i_version;
 	}
 
-	ylist_for_each(i, &obj->variant.directoryVariant.children) {
+	while(sc->nextReturn){
 		curoffs++;
+                l = sc->nextReturn;
 		if (curoffs >= offset) {
-			l = ylist_entry(i, yaffs_Object, siblings);
+                        int this_inode = yaffs_GetObjectInode(l);
+                        int this_type = yaffs_GetObjectType(l);
 
 			yaffs_GetObjectName(l, name,
 					    YAFFS_MAX_NAME_LENGTH + 1);
@@ -1216,24 +1320,30 @@ static int yaffs_readdir(struct file *f, void *dirent, filldir_t filldir)
 			  ("yaffs_readdir: %s inode %d\n", name,
 			   yaffs_GetObjectInode(l)));
 
+                        yaffs_GrossUnlock(dev);
+
 			if (filldir(dirent,
 					name,
 					strlen(name),
 					offset,
-					yaffs_GetObjectInode(l),
-					yaffs_GetObjectType(l)) < 0)
-				goto up_and_out;
+					this_inode,
+					this_type) < 0)
+				goto out;
+
+                        yaffs_GrossLock(dev);
 
 			offset++;
 			f->f_pos++;
 		}
+                yaffs_SearchAdvance(sc);
 	}
 
-up_and_out:
-out:
+unlock_out:
 	yaffs_GrossUnlock(dev);
+out:
+        yaffs_EndSearch(sc);
 
-	return 0;
+	return retVal;
 }
 
 /*
@@ -1321,6 +1431,7 @@ static int yaffs_mknod(struct inode *dir, struct dentry *dentry, int mode,
 	if (obj) {
 		inode = yaffs_get_inode(dir->i_sb, mode, rdev, obj);
 		d_instantiate(dentry, inode);
+		update_dir_time(dir);
 		T(YAFFS_TRACE_OS,
 			("yaffs_mknod created object %d count = %d\n",
 			obj->objectId, atomic_read(&inode->i_count)));
@@ -1374,6 +1485,7 @@ static int yaffs_unlink(struct inode *dir, struct dentry *dentry)
 		dir->i_version++;
 		yaffs_GrossUnlock(dev);
 		mark_inode_dirty(dentry->d_inode);
+		update_dir_time(dir);
 		return 0;
 	}
 	yaffs_GrossUnlock(dev);
@@ -1414,8 +1526,10 @@ static int yaffs_link(struct dentry *old_dentry, struct inode *dir,
 
 	yaffs_GrossUnlock(dev);
 
-	if (link)
+	if (link){
+		update_dir_time(dir);
 		return 0;
+	}
 
 	return -EPERM;
 }
@@ -1441,6 +1555,7 @@ static int yaffs_symlink(struct inode *dir, struct dentry *dentry,
 
 		inode = yaffs_get_inode(dir->i_sb, obj->yst_mode, 0, obj);
 		d_instantiate(dentry, inode);
+		update_dir_time(dir);
 		T(YAFFS_TRACE_OS, ("symlink created OK\n"));
 		return 0;
 	} else {
@@ -1513,7 +1628,10 @@ static int yaffs_rename(struct inode *old_dir, struct dentry *old_dentry,
 			new_dentry->d_inode->i_nlink--;
 			mark_inode_dirty(new_dentry->d_inode);
 		}
-
+		
+		update_dir_time(old_dir);
+		if(old_dir != new_dir)
+			update_dir_time(new_dir);
 		return 0;
 	} else {
 		return -ENOTEMPTY;
@@ -1532,17 +1650,23 @@ static int yaffs_setattr(struct dentry *dentry, struct iattr *attr)
 
 	error = inode_change_ok(inode, attr);
 	if (error == 0) {
+		int result;
+		if (!error){
+			error = inode_setattr(inode, attr);
+			T(YAFFS_TRACE_OS,("inode_setattr called\n"));
+			if (attr->ia_valid & ATTR_SIZE)
+				truncate_inode_pages(&inode->i_data,attr->ia_size);
+		}
 		dev = yaffs_InodeToObject(inode)->myDev;
 		yaffs_GrossLock(dev);
-		if (yaffs_SetAttributes(yaffs_InodeToObject(inode), attr) ==
-				YAFFS_OK) {
+		result = yaffs_SetAttributes(yaffs_InodeToObject(inode), attr);
+		if(result == YAFFS_OK) {
 			error = 0;
 		} else {
 			error = -EPERM;
 		}
 		yaffs_GrossUnlock(dev);
-		if (!error)
-			error = inode_setattr(inode, attr);
+
 	}
 	return error;
 }
@@ -2137,6 +2261,10 @@ static struct super_block *yaffs_internal_read_super(int yaffsVersion,
 	/* we assume this is protected by lock_kernel() in mount/umount */
 	ylist_add_tail(&dev->devList, &yaffs_dev_list);
 
+        /* Directory search handling...*/
+        YINIT_LIST_HEAD(&dev->searchContexts);
+        dev->removeObjectCallback = yaffs_RemoveObjectCallback;
+
 	init_MUTEX(&dev->grossLock);
 
 	yaffs_GrossLock(dev);
@@ -2401,8 +2529,6 @@ static struct {
 	{NULL, 0},
 };
 
-static char inputMessage[100];
-
 #define MAX_MASK_NAME_LENGTH 40
 static int yaffs_proc_write(struct file *file, const char *buf,
 					 unsigned long count, void *data)
@@ -2480,7 +2606,7 @@ static int yaffs_proc_write(struct file *file, const char *buf,
 			}
 		}
 	}
-    
+
 	yaffs_traceMask = rg | YAFFS_TRACE_ALWAYS;
 
 	printk(KERN_DEBUG "new trace = 0x%08X\n", yaffs_traceMask);
@@ -2496,251 +2622,16 @@ static int yaffs_proc_write(struct file *file, const char *buf,
 	return count;
 }
 
-#ifdef CONFIG_YAFFS_REPORT_ECC_ERROR
-/* 
- * Since we use the file operations struct, we can't use the special proc
- * output provisions - we have to use a standard read function, which is this
- * function
- */
-#define YAFFS_PROC_ERROR_NO_DATA() ( \
-((yaffs_error_proc_mode==MODE_ALL && yaffsFilesWithEccError.count==0) \
-||(yaffs_error_proc_mode==MODE_FIXED && yaffsFilesWithEccError.eccFixed==0 ) \
-||(yaffs_error_proc_mode==MODE_UNFIXED && yaffsFilesWithEccError.eccUnfixed==0)) \
-&& strlen(inputMessage) == 0 \
-&& yaffs_error_proc_output_read == 0 \
-)
-DECLARE_WAIT_QUEUE_HEAD(WaitQ);
-
-static ssize_t yaffs_error_proc_output(struct file *file, /* see include/linux/fs.h   */
-                 char *buf, /* The buffer to put data to 
-                       (in the user segment)    */
-                 size_t len,    /* The length of the buffer */
-                 loff_t * offset)
-{
-    int i,ret=0;
-    char *message = NULL;
-    int count = 0;
-    char line[256];
-    int is_sig = 0;
-
-    
-    ts_file_error *item = yaffsFilesWithEccError.head;
-    
-    /* block the read in case there is no data available for output*/
-    if(YAFFS_PROC_ERROR_NO_DATA())
-        wait_event_interruptible(WaitQ, !YAFFS_PROC_ERROR_NO_DATA() );
-
-    if (YAFFS_PROC_ERROR_NO_DATA()) {
-          printk(KERN_DEBUG "yaffs_error_proc_output resumed\n");
-          return -EINTR;
-    }
-
-    if(yaffs_error_proc_output_read) {
-      ret=0;
-    }else if( strlen(inputMessage) > 0 ) {
-        for (i = 0; i < len && inputMessage[i] && inputMessage[i]!=0; i++) {
-            put_user(inputMessage[i], buf + i);
-        }
-        ret = i;
-        yaffs_error_proc_output_read=1;
-        memset(inputMessage,0,sizeof(inputMessage));
-    }else if(yaffsFilesWithEccError.count > 0) {
-        message = YMALLOC(sizeof(line)*yaffsFilesWithEccError.count);
-        if(message == NULL) {
-            ret = 0;
-        }else if ( yaffs_error_proc_mode <= MODE_ALL ) {
-            item = yaffsFilesWithEccError.head;
-            memset(message, 0, sizeof(message));
-            while ( item != NULL ) {
-                if(yaffs_error_proc_mode == MODE_ALL)
-                    sprintf(line, "%s : EccFixed=%d : EccUnfixed=%d\n",
-                            item->name, item->eccFixed, item->eccUnfixed);
-                else if(yaffs_error_proc_mode == MODE_FIXED && item->eccFixed > 0){
-                    sprintf(line, "%s\n", item->name);
-                }
-                else if(yaffs_error_proc_mode == MODE_UNFIXED && item->eccUnfixed > 0 ){
-                    sprintf(line, "%s\n", item->name);
-                }else{
-                    item = item->next;
-                    continue;
-                }
-                strncat(message,line,256);
-                item = item->next;
-            }
-            for (i = 0; i < len && message[i] && message[i]!=0; i++) {
-                put_user(message[i], buf + i);
-            }
-            ret=i;
-            yaffs_error_proc_output_read=1;
-            YFREE(message);
-        }else if ( yaffs_error_proc_mode <= MODE_UNFIXED ) {
-        }
-
-    }
-
-    return ret;       /* Return the number of bytes "read" */
-}
-
-/* 
- * This function receives input from the user when the user writes to the /proc
- * file.
- */
-static ssize_t yaffs_error_proc_input(struct file *file,  /* The file itself */
-                const char *buf,    /* The buffer with input */
-                size_t length,  /* The buffer's length */
-                loff_t * offset)
-{               /* offset to file - ignore */
-    int i;
-
-    /* 
-     * Put the input into inputMessage, where module_output will later be 
-     * able to use it
-     */
-    for (i = 0; i < 100 - 1 && i < length; i++)
-        get_user(inputMessage[i], buf + i);
-    /* 
-     * we want a standard, zero terminated string 
-     */
-    inputMessage[i] = '\0';
-    
-    printk(KERN_DEBUG "yaffs_error_proc_input :%s\n",inputMessage);
-    
-    if(strstr(inputMessage,"unfixed")) {
-      yaffs_error_proc_mode = MODE_UNFIXED;
-    }else if(strstr(inputMessage,"fixed")){
-      yaffs_error_proc_mode = MODE_FIXED;
-    }else if(strstr(inputMessage,"all")){
-      yaffs_error_proc_mode = MODE_ALL;
-    }else {
-      /* we wrote an unknown command */
-      strcat(inputMessage,":unknown command"); 
-    }
-
-    /* 
-     * We need to return the number of input characters used 
-     */
-    return i;
-}
-
-
-/*
- * This function decides whether to allow an operation (return zero) or not
- * allow it (return a non-zero which indicates why it is not allowed).
- *
- * The operation can be one of the following values:
- * 0 - Execute (run the "file" - meaningless in our case)
- * 2 - Write (input to the kernel module)
- * 4 - Read (output from the kernel module)
- *
- * NOTE:This is the real function that checks file permissions. The permissions
- * returned by ls -l are for reference only, and can be overridden here.
- */
-static int yaffs_error_proc_permission(struct inode *inode, int op)
-{
-    /* 
-     * We allow everybody to read from our module, but only root (uid 0)
-     * may write to it
-     */
-    //printk(KERN_DEBUG "yaffs_error_proc_permission :op=%d tgid=%d\n",op,current->tgid);
-    uint16_t access = op & 0xF;
-    /* it seems that tgid is the PID so we don't know how to get uid or gid... */
-    
-    if (access == 4 || (access == 2))
-        return 0;
-    /* 
-     * If it's anything else, access is denied 
-     */
-    return -EACCES;
-}
-
-
-/* 
- * Called when the /proc file is opened 
- */
- 
- 
-static int yaffs_error_proc_open(struct inode *inode, struct file *file)
-{
-    /* 
-     * If the file's flags include O_NONBLOCK, it means the process doesn't
-     * want to wait for the file.  In this case, if the file is already 
-     * open, we should fail with -EAGAIN, meaning "you'll have to try 
-     * again", instead of blocking a process which would rather stay awake.
-     */
-    if ( yaffs_error_proc_is_open )
-        return -EACCES;/* file can only be opened once */
-    else if ( file->f_flags & O_WRONLY )
-        return 0; /* write access always ok if not already opened */ 
-    if ((file->f_flags & O_NONBLOCK) && YAFFS_PROC_ERROR_NO_DATA() )
-        return -EAGAIN;
-
-    /* 
-     * This is the correct place for try_module_get(THIS_MODULE) because 
-     * if a process is in the loop, which is within the kernel module,
-     * the kernel module must not be removed.
-     */
-    try_module_get(THIS_MODULE);
-
-    yaffs_error_proc_is_open=1;
-    
-
-    return 0;       /* Allow the access */
-}
-
-/* 
- * Called when the /proc file is closed 
- */
-static int yaffs_error_proc_close(struct inode *inode, struct file *file)
-{
-    /* 
-     * Wake up all the processes in WaitQ, so if anybody is waiting for the
-     * file, they can have it.
-     */
-    yaffs_error_proc_output_read=0;
-
-    yaffs_error_proc_is_open=0;
-    
-    module_put(THIS_MODULE);
-
-    return 0;       /* success */
-}
-
-void yaffs_error_proc_unblock() {
-     // we input a message, unblock an eventual read
-    wake_up(&WaitQ);
-}
-
-/* 
- * File operations for our proc file. This is where we place pointers to all
- * the functions called when somebody tries to do something to our file. NULL
- * means we don't want to deal with something.
- */
-static struct file_operations yaffs_error_proc_fops = {
-    .read = yaffs_error_proc_output,  /* "read" from the file */
-    .write = yaffs_error_proc_input,  /* "write" to the file */
-    .open = yaffs_error_proc_open,    /* called when the /proc file is opened */
-    .release = yaffs_error_proc_close,    /* called when it's closed */
-};
-
-/* 
- * Inode operations : used to handle permissions
- */
-
-static struct inode_operations yaffs_error_proc_inode = {
-    .permission = yaffs_error_proc_permission,    /* check for permissions */
-};
-#endif
-
 /* Stuff to handle installation of file systems */
 struct file_system_to_install {
-    struct file_system_type *fst;
-    int installed;
+	struct file_system_type *fst;
+	int installed;
 };
 
 static struct file_system_to_install fs_to_install[] = {
-    {&yaffs_fs_type, 0},
-    {&yaffs2_fs_type, 0},
-    {NULL, 0}
+	{&yaffs_fs_type, 0},
+	{&yaffs2_fs_type, 0},
+	{NULL, 0}
 };
 
 static int __init init_yaffs_fs(void)
@@ -2763,23 +2654,6 @@ static int __init init_yaffs_fs(void)
 	} else
 		return -ENOMEM;
 
-#ifdef CONFIG_YAFFS_REPORT_ECC_ERROR
-    /* Install the proc_fs entry */
-    my_proc_entry = create_proc_entry("yaffs_error",
-                           S_IRUGO | S_IFREG,
-                           YPROC_ROOT);
-
-    if (my_proc_entry) {
-        my_proc_entry->owner = THIS_MODULE;
-        my_proc_entry->proc_iops = &yaffs_error_proc_inode;
-        my_proc_entry->proc_fops = &yaffs_error_proc_fops;
-        my_proc_entry->mode = S_IFREG | S_IRUGO | S_IWUSR;
-        my_proc_entry->uid = 0;
-        my_proc_entry->gid = 0;
-        my_proc_entry->size = 80;
-    } else
-        return -ENOMEM;
-#endif
 	/* Now add the file system entries */
 
 	fsinst = fs_to_install;
