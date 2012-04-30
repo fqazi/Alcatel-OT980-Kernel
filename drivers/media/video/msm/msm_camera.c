@@ -455,7 +455,8 @@ static int __msm_get_frame(struct msm_sync *sync,
 		goto err;
 	}
 
-	frame->ts = qcmd->ts;	
+	// XXX needed for new drivers
+	//frame->ts = qcmd->ts;	
 	frame->buffer = (unsigned long)pmem_info.vaddr;
 	frame->y_off = pmem_info.y_off;
 	frame->cbcr_off = pmem_info.cbcr_off;

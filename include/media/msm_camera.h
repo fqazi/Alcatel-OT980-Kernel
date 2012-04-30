@@ -308,7 +308,8 @@ struct outputCfg {
 #define OUTPUT_TYPE_V		4
 
 struct msm_frame {
-	struct timespec ts;
+	//XXX NEEDED for newer drivers!!!
+	//struct timespec ts;
 	int path;
 	unsigned long buffer;
 	uint32_t y_off;

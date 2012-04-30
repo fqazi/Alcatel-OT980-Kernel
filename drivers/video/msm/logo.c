@@ -75,7 +75,7 @@ int load_565rle_image(char *filename)
 		goto err_logo_free_data;
 	}
 
-	max = fb_width(info) * fb_height(info);
+	max = ALIGN(fb_width(info),32) * fb_height(info);
 	ptr = data;
 	bits = (unsigned short *)(info->screen_base);
 	while (count > 3) {

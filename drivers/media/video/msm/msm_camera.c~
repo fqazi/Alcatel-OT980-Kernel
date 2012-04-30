@@ -2076,6 +2076,7 @@ static void msm_vfe_sync(struct msm_vfe_resp *vdata,
 	qcmd = ((struct msm_queue_cmd *)vdata) - 1;
 	qcmd->type = qtype;
 	qcmd->command = vdata;
+	ktime_get_ts(&(qcmd->ts));
 
 	if (qtype != MSM_CAM_Q_VFE_MSG)
 		goto for_config;

@@ -50,7 +50,7 @@
 #include <mach/pmic.h> //liuyu added
 
 #ifdef CONFIG_FB_MSM_LOGO
-#define INIT_IMAGE_FILE "/logo.rle"
+#define INIT_IMAGE_FILE "/initlogo.rle"
 extern int load_565rle_image(char *filename);
 #endif
 
@@ -896,14 +896,15 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	   32 pixels for color buffers, so for the cases where the GPU
 	   is writing directly to fb0, the framebuffer pitch
 	   also needs to be 32 pixel aligned */
-/*
+//FIXME we are removing this!!!!
+
 	if (mfd->index == 0)
 		fix->line_length = ALIGN(panel_info->xres, 32) * bpp;
-	else */
+	else 
 		fix->line_length = panel_info->xres * bpp;
 
 	fix->smem_len = fix->line_length * panel_info->yres * mfd->fb_page;
-
+   fix->smem_len += 128 * 1024;
 
 
 	mfd->var_xres = panel_info->xres;

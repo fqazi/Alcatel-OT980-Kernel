@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.29
- * Sun Apr 15 20:53:09 2012
+ * Thu Apr 26 22:09:18 2012
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_VIDEO_V4L1_COMPAT 1
@@ -229,6 +229,7 @@
 #define CONFIG_DEFAULT_IOSCHED "deadline"
 #define CONFIG_CRYPTO_TWOFISH 1
 #define CONFIG_CRYPTO_HASH 1
+#define CONFIG_FB_MSM_LOGO 1
 #define CONFIG_UNIX98_PTYS 1
 #define CONFIG_FB_CFB_COPYAREA 1
 #define CONFIG_MEDIA_TUNER_TDA9887 1
