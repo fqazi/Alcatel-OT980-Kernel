@@ -5146,6 +5146,7 @@ _dhdsdio_download_firmware(struct dhd_bus *bus)
 	bool embed = FALSE;	/* download embedded firmware */
 	bool dlok = FALSE;	/* download firmware succeeded */
 
+	DHD_ERROR(("DOWNLOADING FIRMWARE: %s %s\n", bus->fw_path,bus->nv_path));
 	/* Out immediately if no image to download */
 	if ((bus->fw_path == NULL) || (bus->fw_path[0] == '\0')) {
 #ifdef BCMEMBEDIMAGE

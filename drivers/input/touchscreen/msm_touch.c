@@ -23,6 +23,10 @@
 #include <linux/earlysuspend.h>
 #include <mach/msm_touch.h>
 #include <asm/uaccess.h>
+
+// FUTURE (disable internal averaging):
+// http://gitorious.org/linux-on-qualcomm-s-msm/linux-msm/blobs/6d9e0e9aacc185c613ed1f9bb6a395162be0e439/drivers/input/touchscreen/tssc_manager.c
+
 /* HW register map */
 #define TSSC_CTL_REG      0x100
 #define TSSC_SI_REG       0x108

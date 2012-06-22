@@ -23,6 +23,8 @@
 #include <linux/earlysuspend.h>
 #include <mach/msm_touch.h>
 #include <asm/uaccess.h>
+
+//TODO find out all the registers
 /* HW register map */
 #define TSSC_CTL_REG      0x100
 #define TSSC_SI_REG       0x108
@@ -693,7 +695,7 @@ static int __devinit ts_probe(struct platform_device *pdev)
 	    ts->early_suspend.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
 	    ts->early_suspend.suspend = ts_early_suspend;
 	    ts->early_suspend.resume = ts_late_resume;
-	    //register_early_suspend(&ts->early_suspend);
+	    register_early_suspend(&ts->early_suspend);
 
 	platform_set_drvdata(pdev, ts);
 	
@@ -717,7 +719,7 @@ static int __devexit ts_remove(struct platform_device *pdev)
 	struct resource *res;
 	struct ts *ts = platform_get_drvdata(pdev);
 
-// unregister_early_suspend(&ts->early_suspend);
+ unregister_early_suspend(&ts->early_suspend);
 	free_irq(ts->irq, ts);
 	del_timer_sync(&ts->timer);
 #ifdef CALIBRATION

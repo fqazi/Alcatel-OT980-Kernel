@@ -102,6 +102,11 @@ dhd_common_init(void)
 	dhd_msg_level = DHD_ERROR_VAL;
 	fw_path[0] = '\0';
 	nv_path[0] = '\0';
+	
+	// Force the default path to the path for
+	// the ot980 GB Image
+	strcpy(fw_path,"/system/etc/firmware/rtecdc.bin");
+	strcpy(nv_path,"/system/etc/firmware/nvram.txt");
 }
 
 static int

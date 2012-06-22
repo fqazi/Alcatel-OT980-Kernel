@@ -1476,6 +1476,12 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 	if ((nvram_path != NULL) && (nvram_path[0] != '\0'))
 		strcpy(nv_path, nvram_path);
 
+
+	// Force the default path to the path for
+	// the ot980 GB Image
+	strcpy(fw_path,"/system/etc/firmware/rtecdc.bin");
+	strcpy(nv_path,"/system/etc/firmware/nvram.txt");
+	
 	/* Allocate etherdev, including space for private structure */
 	if (!(net = alloc_etherdev(sizeof(dhd)))) {
 		DHD_ERROR(("%s: OOM - alloc_etherdev\n", __FUNCTION__));
@@ -1595,7 +1601,12 @@ dhd_bus_start(dhd_pub_t *dhdp)
 	ASSERT(dhd);
 
 	DHD_TRACE(("%s: \n", __FUNCTION__));
-
+	
+	// Force the default path to the path for
+	// the ot980 GB Image
+	strcpy(fw_path,"/system/etc/firmware/rtecdc.bin");
+	strcpy(nv_path,"/system/etc/firmware/nvram.txt");
+	
 	/* try to download image and nvram to the dongle */
 	if  (dhd->pub.busstate == DHD_BUS_DOWN) {
 		if (!(dhd_bus_download_firmware(dhd->pub.bus, dhd->pub.osh,
